@@ -1,0 +1,16 @@
+apiVersion: api.operator.com/v1alpha1
+kind: Scaler
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: scaler-sample
+spec:
+  start: 15
+  end: 16
+  replicas: 3
+  deployments:
+    - name: abc
+      namespace: default
+    - name: def
+      namespace: default
