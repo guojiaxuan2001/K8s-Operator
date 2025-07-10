@@ -20,6 +20,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	SUCCESS = "Success"
+	FAILURE = "Failure"
+)
+
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
@@ -32,9 +37,15 @@ type ScalerSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	Start       int              `json:"start"`
+	// +kubebuilder:validation:Maximum=23
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Required
+	Start int `json:"start"`
+	// +kubebuilder:validation:Maximum=24
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Required
 	End         int              `json:"end"`
-	Replicas    int              `json:"replicas"`
+	Replicas    int32            `json:"replicas"`
 	Deployments []NamespacedName `json:"deployments"`
 }
 
@@ -42,10 +53,12 @@ type ScalerSpec struct {
 type ScalerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	Status string `json:"status"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=`.status.status`
 
 // Scaler is the Schema for the scalers API.
 type Scaler struct {

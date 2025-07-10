@@ -10,7 +10,7 @@ spec:
   end: 16
   replicas: 3
   deployments:
-    - name: abc
+    - name: v1
       namespace: default
-    - name: def
+    - name: v2
       namespace: default

@@ -19,6 +19,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	v1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -64,17 +67,50 @@ func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	startTime := scaler.Spec.Start
 	endTime := scaler.Spec.End
-	replicas := int32(scaler.Spec.Replicas)
+	replicas := scaler.Spec.Replicas
 
 	currentHour := time.Now().Local().Hour()
 	log.Info(fmt.Sprintf("currentTime:%d", currentHour))
 
 	//From startTime to endTime
 	if currentHour >= startTime && currentHour <= endTime {
-
+		log.Info("Starting to call scaleDeployment function")
+		err := scaleDeployment(scaler, r, ctx, replicas)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: time.Duration(10 * time.Second)}, nil
+}
+
+func scaleDeployment(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context, replicas int32) error {
+	//Iterate deployments from scaler Instance
+	for _, deploy := range scaler.Spec.Deployments {
+		//build up a new deployment instance
+		deployment := &v1.Deployment{}
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      deploy.Name,
+			Namespace: deploy.Namespace,
+		}, deployment)
+		if err != nil {
+			return err
+		}
+
+		//Judging  the replica number of deployment equal to the scaler specified or not
+		if deployment.Spec.Replicas != &replicas {
+			deployment.Spec.Replicas = &replicas
+			err := r.Update(ctx, deployment)
+			if err != nil {
+				scaler.Status.Status = apiv1alpha1.FAILURE
+				r.Status().Update(ctx, scaler)
+				return err
+			}
+			scaler.Status.Status = apiv1alpha1.SUCCESS
+			r.Status().Update(ctx, scaler)
+		}
+	}
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
