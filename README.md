@@ -21,7 +21,8 @@ The primary goal is to reduce resource costs and handle periodic workload change
 
 ## Workflow
 Process summary:
-	1.	Enter loop and check the CR status
+
+	1. 	Enter loop and check the CR status
 	2.	If status="" and conditions match → store the original replica count in annotations
 	3.	Within the time window, if not yet scaled → execute scaleDeployment
 	4.	After the time window, if status="Scaled" → execute restoreDeployment
