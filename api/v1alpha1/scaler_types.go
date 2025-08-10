@@ -21,9 +21,16 @@ import (
 )
 
 const (
-	SUCCESS = "Success"
-	FAILURE = "Failure"
+	SCALED   = "Scaled"
+	FAILURE  = "Failure"
+	PENDING  = "Pending"
+	RESTORED = "Restored"
 )
+
+type DeploymentInfo struct {
+	Replicas  int32  `json:"replicas"`
+	Namespace string `json:"namespace"`
+}
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.

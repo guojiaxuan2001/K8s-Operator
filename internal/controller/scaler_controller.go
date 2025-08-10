@@ -18,21 +18,29 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	v1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	apiv1alpha1 "github.com/guojiaxua/api/v1alpha1"
 )
 
+const finalizer = "finalizer.csi.k8s.io"
+
 var logger = log.Log.WithName("ScalerController")
+
+var originalDeploymentInfo = make(map[string]apiv1alpha1.DeploymentInfo)
+
+var annotations = make(map[string]string)
 
 // ScalerReconciler reconciles a Scaler object
 type ScalerReconciler struct {
@@ -65,6 +73,94 @@ func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	if scaler.Status.Status == "" {
+		scaler.Status.Status = apiv1alpha1.PENDING
+		err := r.Status().Update(ctx, scaler)
+		if err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+
+		if scaler.ObjectMeta.DeletionTimestemp.IsZero != nil {
+			if !controllerutil.ContainsFinalizer(scaler, finalizer) {
+
+				controllerutil.AddFinalizer(scaler, finalizer)
+				log.Info("finalizer added", finalizer)
+				err := r.Update(ctx, scaler)
+				if err != nil {
+					return ctrl.Result{}, client.IgnoreNotFound(err)
+				}
+			}
+			if scaler.Status.Status == "" {
+				scaler.Status.Status = apiv1alpha1.PENDING
+				err := r.Status().Update(ctx, scaler)
+				if err != nil {
+					return ctrl.Result{}, client.IgnoreNotFound(err)
+				}
+
+				if scaler.ObjectMeta.DeletionTimestemp.IsZero != nil {
+					if !controllerutil.ContainsFinalizer(scaler, finalizer) {
+
+						controllerutil.AddFinalizer(scaler, finalizer)
+						log.Info("finalizer added", finalizer)
+						err := r.Update(ctx, scaler)
+						if err != nil {
+							return ctrl.Result{}, client.IgnoreNotFound(err)
+						}
+					}
+
+				}
+
+				//Add the number of replicas and namespace which managed by scaler to annotations
+				if err := addAnnotations(scaler, r, ctx); err != nil {
+					return ctrl.Result{}, client.IgnoreNotFound(err)
+				}
+			}
+
+			startTime := scaler.Spec.Start
+			endTime := scaler.Spec.End
+			replicas := scaler.Spec.Replicas
+
+			currentHour := time.Now().Local().Hour()
+			log.Info(fmt.Sprintf("currentTime:%d", currentHour))
+
+			//From startTime to endTime
+			if currentHour >= startTime && currentHour <= endTime {
+				if scaler.Status.Status != apiv1alpha1.SCALED {
+					log.Info("Starting to call scaleDeployment function")
+					err := scaleDeployment(scaler, r, ctx, replicas)
+					if err != nil {
+						return ctrl.Result{}, err
+					}
+				}
+			} else {
+				if scaler.Status.Status == apiv1alpha1.SCALED {
+					err := restoreDeployment(scaler, r, ctx)
+					if err != nil {
+						return ctrl.Result{}, err
+					}
+				}
+
+			}
+
+		} else {
+			log.Info("Starting deletion flow.")
+			if scaler.Status.Status == apiv1alpha1.SCALED {
+				err := restoreDeployment(scaler, r, ctx)
+				if err != nil {
+					return ctrl.Result{}, err
+				}
+				log.Info("Remove finalizer")
+				controllerutil.RemoveFinalizer(scaler, finalizer)
+			}
+			log.Info("Remove successfully")
+		}
+
+		//Add the number of replicas and namespace which managed by scaler to annotations
+		if err := addAnnotations(scaler, r, ctx); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+	}
+
 	startTime := scaler.Spec.Start
 	endTime := scaler.Spec.End
 	replicas := scaler.Spec.Replicas
@@ -74,14 +170,51 @@ func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	//From startTime to endTime
 	if currentHour >= startTime && currentHour <= endTime {
-		log.Info("Starting to call scaleDeployment function")
-		err := scaleDeployment(scaler, r, ctx, replicas)
-		if err != nil {
-			return ctrl.Result{}, err
+		if scaler.Status.Status != apiv1alpha1.SCALED {
+			log.Info("Starting to call scaleDeployment function")
+			err := scaleDeployment(scaler, r, ctx, replicas)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	} else {
+		if scaler.Status.Status == apiv1alpha1.SCALED {
+			err := restoreDeployment(scaler, r, ctx)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
 	return ctrl.Result{RequeueAfter: time.Duration(10 * time.Second)}, nil
+}
+
+func restoreDeployment(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context) error {
+	logger.Info("starting to return to the original state")
+	for name, originalDeployInfo := range originalDeploymentInfo {
+		deployment := &v1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      name,
+			Namespace: originalDeployInfo.Namespace,
+		}, deployment); err != nil {
+			return err
+		}
+
+		if deployment.Spec.Replicas != &originalDeployInfo.Replicas {
+			deployment.Spec.Replicas = &originalDeployInfo.Replicas
+			if err := r.Update(ctx, deployment); err != nil {
+				return err
+			}
+		}
+	}
+
+	scaler.Status.Status = apiv1alpha1.RESTORED
+	err := r.Status().Update(ctx, scaler)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func scaleDeployment(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context, replicas int32) error {
@@ -106,14 +239,58 @@ func scaleDeployment(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx contex
 				r.Status().Update(ctx, scaler)
 				return err
 			}
-			scaler.Status.Status = apiv1alpha1.SUCCESS
+			scaler.Status.Status = apiv1alpha1.SCALED
 			r.Status().Update(ctx, scaler)
 		}
 	}
 	return nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
+func addAnnotations(scaler *apiv1alpha1.Scaler, r *ScalerReconciler, ctx context.Context) error {
+	//Recording the origin number of replicas and the name of namespace
+	for _, deploy := range scaler.Spec.Deployments {
+		deployment := &v1.Deployment{}
+		if err := r.Get(ctx, types.NamespacedName{
+			Name:      deploy.Name,
+			Namespace: deployment.Namespace,
+		}, deployment); err != nil {
+			return err
+		}
+
+		//Start recording
+		if *deployment.Spec.Replicas != scaler.Spec.Replicas {
+			logger.Info("add original state to originalDeploymentInfo map.")
+			originalDeploymentInfo[deployment.Name] = apiv1alpha1.DeploymentInfo{
+				*deployment.Spec.Replicas,
+				deployment.Namespace,
+			}
+		}
+
+	}
+
+	//Add the original info to annotations
+	for deploymentName, info := range originalDeploymentInfo {
+		//Transfer info to json
+		infoJson, err := json.Marshal(info)
+		if err != nil {
+			return err
+		}
+
+		//Saving infoJason to annotations map
+		annotations[deploymentName] = string(infoJson)
+	}
+
+	//Updating the annotations of scaler
+	scaler.ObjectMeta.Annotations = annotations
+	err := r.Update(ctx, scaler)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// SetupWithManager sets up the controller with the Manager
 func (r *ScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1alpha1.Scaler{}).
